@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>萌宠排排排</title>
 <style>
   :root {
@@ -19,13 +19,16 @@
     --gap: 6px;
   }
 
-  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 
   html, body {
     height: 100%;
     font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
     background: linear-gradient(165deg, #fff0f5 0%, #fff8f0 45%, #f0f7ff 100%);
     color: #5a4a4a;
+    touch-action: manipulation;
+    overscroll-behavior: none;
+    -ms-touch-action: manipulation;
   }
 
   body {
@@ -921,6 +924,17 @@
     startLevel(level, false);
   });
   document.getElementById("btnHint").addEventListener("click", showHint);
+
+  // Block iOS double-tap zoom without killing clicks
+  let lastTouchEnd = 0;
+  document.addEventListener("touchend", (e) => {
+    const now = Date.now();
+    if (now - lastTouchEnd <= 300) {
+      e.preventDefault();
+    }
+    lastTouchEnd = now;
+  }, { passive: false });
+  document.addEventListener("gesturestart", (e) => e.preventDefault(), { passive: false });
 
   window.addEventListener("resize", scheduleFit);
   window.addEventListener("orientationchange", () => setTimeout(scheduleFit, 120));
