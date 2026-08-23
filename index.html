@@ -76,18 +76,25 @@
   }
 
   .orient-tip {
-    display: none;
     text-align: center;
     font-size: 0.72rem;
     color: #c07088;
     background: rgba(255,255,255,0.7);
     border-radius: 999px;
     padding: 6px 12px;
-    margin: -4px auto 0;
+    margin: 4px auto 0;
     width: fit-content;
     max-width: 100%;
+    min-height: 28px;
+    line-height: 1.2;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
   }
-  .orient-tip.show { display: block; }
+  .orient-tip.show {
+    visibility: visible;
+    opacity: 1;
+  }
 
   /* Header */
   .header {
@@ -112,18 +119,42 @@
   .stats {
     display: flex;
     justify-content: center;
-    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
     margin-top: 10px;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
+    min-height: 36px;
   }
   .stat {
     background: rgba(255,255,255,0.75);
-    padding: 6px 14px;
+    padding: 6px 12px;
     border-radius: 999px;
     box-shadow: var(--shadow);
     font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
   }
   .stat span { color: var(--accent-dark); }
+  .stat.battle-stat {
+    min-width: 4.6em;
+    text-align: center;
+    visibility: hidden;
+  }
+  .stat.battle-stat.is-on {
+    visibility: visible;
+  }
+  #battleTimerStat {
+    min-width: 6.2em;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+  #battleTimer {
+    display: inline-block;
+    min-width: 3.2em;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
 
   /* Board */
   .board-wrap {
@@ -148,7 +179,7 @@
     justify-content: center;
     align-items: flex-end;
     gap: var(--gap);
-    min-height: 200px;
+    min-height: 220px;
     position: relative;
     z-index: 1;
     width: 100%;
@@ -289,10 +320,23 @@
 
   /* Controls */
   .controls {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
-    justify-content: center;
-    flex-wrap: wrap;
+    width: 100%;
+  }
+  .controls button {
+    width: 100%;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  @media (min-width: 420px) {
+    .controls {
+      display: flex;
+      flex-wrap: nowrap;
+      justify-content: center;
+    }
+    .controls button { width: auto; }
   }
   button {
     font-family: inherit;
@@ -402,7 +446,7 @@
     .stats { margin-top: 4px; gap: 10px; }
     .stat { padding: 4px 12px; font-size: 0.82rem; }
     .board-wrap { padding: 10px 8px 12px; }
-    .board { min-height: 140px; }
+    .board { min-height: 140px; height: auto; max-height: calc(100dvh - 90px); }
     .slots-section { padding: 8px 10px 10px; }
     .slots-label { margin-bottom: 6px; }
     .orient-tip { display: none !important; }
@@ -420,7 +464,7 @@
     .board-wrap { grid-column: 1; grid-row: 2 / 4; }
     .slots-section { grid-column: 2; grid-row: 2; align-self: end; }
     .controls { grid-column: 2; grid-row: 3; }
-    .board { min-height: 120px; max-height: calc(100dvh - 90px); overflow-y: auto; }
+    .board { min-height: 120px; height: auto; max-height: calc(100dvh - 90px); overflow-y: auto; }
   }
 
 
@@ -527,8 +571,8 @@
     <div class="stats">
       <div class="stat">第 <span id="levelNum">1</span> 关</div>
       <div class="stat">消除 <span id="scoreNum">0</span></div>
-      <div class="stat battle-stat" id="battleBadge" hidden>对战中</div>
-      <div class="stat battle-stat" id="battleTimerStat" hidden>⏱ <span id="battleTimer">0.0</span>s</div>
+      <div class="stat battle-stat" id="battleBadge">对战中</div>
+      <div class="stat battle-stat" id="battleTimerStat">⏱ <span id="battleTimer">0.0</span>s</div>
     </div>
     <div class="diff-bar" id="diffBar" role="group" aria-label="难度">
       <button type="button" class="diff-chip" data-diff="easy">简单</button>
@@ -915,14 +959,15 @@
     const badge = document.getElementById("battleBadge");
     const timerStat = document.getElementById("battleTimerStat");
     const diffBar = document.getElementById("diffBar");
-    if (badge) badge.hidden = !battleMode;
-    if (timerStat) timerStat.hidden = !battleMode;
+    if (badge) badge.classList.toggle("is-on", !!battleMode);
+    if (timerStat) timerStat.classList.toggle("is-on", !!battleMode);
     if (diffBar) {
       diffBar.classList.toggle("locked", battleMode);
       diffBar.querySelectorAll(".diff-chip").forEach((btn) => {
         btn.disabled = !!battleMode;
       });
     }
+    document.getElementById("app").classList.toggle("in-battle", !!battleMode);
     updateBattleTimerDisplay();
   }
 
@@ -1511,7 +1556,8 @@
     toastTimer = setTimeout(() => toastEl.classList.remove("show"), 1800);
   }
 
-  function fitBoard() {
+  let lastFitKey = "";
+  function fitBoard(force) {
     const n = Math.max(columns.length || 7, 1);
     const wrap = document.querySelector(".board-wrap");
     if (!wrap) return;
@@ -1524,10 +1570,16 @@
     const maxTile = isLandscape ? 56 : 50;
     const minTile = isLandscape ? 30 : 28;
     tile = Math.max(minTile, Math.min(maxTile, tile));
-    const root = document.documentElement;
-    root.style.setProperty("--tile", tile + "px");
-    root.style.setProperty("--gap", gap + "px");
-    root.style.setProperty("--tile-font", Math.max(14, Math.round(tile * 0.58)) + "px");
+    const key = n + "|" + avail + "|" + tile + "|" + (isLandscape ? 1 : 0);
+    if (!force && key === lastFitKey) {
+      // still refresh tip visibility without touching tile size
+    } else {
+      lastFitKey = key;
+      const root = document.documentElement;
+      root.style.setProperty("--tile", tile + "px");
+      root.style.setProperty("--gap", gap + "px");
+      root.style.setProperty("--tile-font", Math.max(14, Math.round(tile * 0.58)) + "px");
+    }
 
     const tip = document.getElementById("orientTip");
     if (tip) {
@@ -1537,18 +1589,27 @@
     }
   }
 
-  function scheduleFit() {
-    requestAnimationFrame(() => {
-      fitBoard();
-      // second pass after fonts/layout settle
-      requestAnimationFrame(fitBoard);
+  let fitRaf = 0;
+  function scheduleFit(force) {
+    if (fitRaf) cancelAnimationFrame(fitRaf);
+    fitRaf = requestAnimationFrame(() => {
+      fitRaf = 0;
+      fitBoard(!!force);
     });
   }
 
-  const _renderBoard = renderBoard;
-  renderBoard = function () {
-    _renderBoard();
-    scheduleFit();
+  // Only re-fit when column count changes (level/deal), not on every tile click render
+  const _startLevel = startLevel;
+  startLevel = function (lv, keepScore) {
+    lastFitKey = "";
+    _startLevel(lv, keepScore);
+    scheduleFit(true);
+  };
+  const _restoreProgress = restoreProgress;
+  restoreProgress = function (data) {
+    lastFitKey = "";
+    _restoreProgress(data);
+    scheduleFit(true);
   };
 
   function setDifficulty(next, restart) {
