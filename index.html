@@ -560,6 +560,70 @@
     overflow-y: auto;
     line-height: 1.45;
   }
+
+  .duel-panel {
+    margin-top: 8px;
+    background: rgba(255,255,255,0.72);
+    border-radius: 16px;
+    padding: 10px 12px;
+    box-shadow: var(--shadow);
+    min-height: 92px;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .duel-panel.is-on {
+    visibility: visible;
+    opacity: 1;
+  }
+  .duel-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #c07088;
+    margin-bottom: 8px;
+  }
+  #duelStatus {
+    font-weight: 600;
+    font-size: 0.72rem;
+    color: #a08088;
+  }
+  .duel-row { margin-bottom: 6px; }
+  .duel-row:last-child { margin-bottom: 0; }
+  .duel-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #5a4a4a;
+    margin-bottom: 3px;
+  }
+  .duel-meta {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: #a07080;
+    white-space: nowrap;
+  }
+  .duel-bar {
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(255, 200, 210, 0.55);
+    overflow: hidden;
+  }
+  .duel-bar > i {
+    display: block;
+    height: 100%;
+    width: 0%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #ff8fab, #ffb347);
+    transition: width 0.25s ease;
+  }
+  .duel-row.opp .duel-bar > i {
+    background: linear-gradient(90deg, #7ec8ff, #a78bfa);
+  }
   .modal.battle-modal { max-width: 320px; }
 </style>
 </head>
@@ -580,6 +644,17 @@
       <button type="button" class="diff-chip" data-diff="hard">困难</button>
     </div>
     <p class="orient-tip" id="orientTip">列较多时横过来玩更舒服～</p>
+    <div class="duel-panel" id="duelPanel" aria-live="polite">
+      <div class="duel-title"><span>实时对战进度</span><span id="duelStatus">未连接</span></div>
+      <div class="duel-row me">
+        <div class="duel-head"><span>我</span><span class="duel-meta" id="duelMeMeta">—</span></div>
+        <div class="duel-bar"><i id="duelMeBar"></i></div>
+      </div>
+      <div class="duel-row opp">
+        <div class="duel-head"><span>对手</span><span class="duel-meta" id="duelOppMeta">等待加入</span></div>
+        <div class="duel-bar"><i id="duelOppBar"></i></div>
+      </div>
+    </div>
   </header>
 
   <div class="board-wrap">
@@ -624,7 +699,7 @@
   <div class="modal battle-modal wide">
     <span class="modal-emoji">⚔️</span>
     <h2>发起对战</h2>
-    <p id="battleInviteHint">生成邀请链接，好友打开后会得到同一副牌。比比谁更快通关～</p>
+    <p id="battleInviteHint">生成实时对战房间，好友打开同一链接后可互看进度，比谁先清空～</p>
     <div class="invite-box" id="battleInviteLink"></div>
     <div class="modal-btns">
       <button type="button" class="btn-primary" id="btnCopyInvite">复制链接</button>
@@ -636,6 +711,7 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="./peerjs.min.js"></script>
 <script>
 (function () {
   "use strict";
@@ -697,6 +773,15 @@
   let battleStartMs = 0; // 0 = not started
   let battleTimerId = null;
   let pendingInvitePayload = null;
+  let battleTotalTiles = 0;
+  let livePeer = null;
+  let liveConn = null;
+  let liveRole = null; // host | guest
+  let liveHostPeerId = null;
+  let liveConnected = false;
+  let liveOpp = { score: 0, remaining: 0, elapsedMs: 0, finished: false, won: false, connected: false };
+  let liveSyncTimer = null;
+  let liveWanted = false;
 
   const STORAGE_KEY = "mengchong-paipaipai-save-v1";
   let maxCleared = 0; // highest level the player has beaten
@@ -831,9 +916,12 @@
     }
   }
 
-  function buildBattleLink(payload) {
+  function buildBattleLink(payload, peerId) {
     const base = location.origin + location.pathname;
-    return base + "?b=" + encodeBattlePayload(payload);
+    let url = base + "?b=" + encodeBattlePayload(payload);
+    const pid = peerId || liveHostPeerId || payload.p;
+    if (pid) url += "&p=" + encodeURIComponent(pid);
+    return url;
   }
 
   function formatBattleTime(ms) {
@@ -848,10 +936,14 @@
   function stripBattleQuery() {
     try {
       const url = new URL(location.href);
-      if (url.searchParams.has("b")) {
-        url.searchParams.delete("b");
-        history.replaceState(null, "", url.pathname + url.search + url.hash);
-      }
+      let changed = false;
+      ["b", "p"].forEach((k) => {
+        if (url.searchParams.has(k)) {
+          url.searchParams.delete(k);
+          changed = true;
+        }
+      });
+      if (changed) history.replaceState(null, "", url.pathname + url.search + url.hash);
     } catch (e) { /* ignore */ }
   }
 
@@ -955,6 +1047,227 @@
     updateBattleTimerDisplay();
   }
 
+
+  function countBoardTiles() {
+    let n = 0;
+    columns.forEach((s) => { n += s.length; });
+    return n;
+  }
+
+  function getMyLiveState() {
+    const remaining = countBoardTiles();
+    const elapsedMs = battleStartMs ? Date.now() - battleStartMs : 0;
+    const total = Math.max(1, battleTotalTiles || remaining);
+    const clearedTiles = Math.max(0, total - remaining);
+    const progress = Math.max(0, Math.min(1, clearedTiles / total));
+    return {
+      type: "sync",
+      score: score,
+      remaining: remaining,
+      slots: slots.length,
+      elapsedMs: elapsedMs,
+      finished: !!gameOver,
+      won: !!(gameOver && remaining === 0 && slots.length === 0),
+      progress: progress,
+      total: total,
+    };
+  }
+
+  function setDuelStatus(text) {
+    const el = document.getElementById("duelStatus");
+    if (el) el.textContent = text;
+  }
+
+  function updateDuelPanel() {
+    const panel = document.getElementById("duelPanel");
+    if (!panel) return;
+    const show = !!battleMode && !!liveWanted;
+    panel.classList.toggle("is-on", show);
+    if (!show) return;
+
+    const me = getMyLiveState();
+    const meMeta = document.getElementById("duelMeMeta");
+    const meBar = document.getElementById("duelMeBar");
+    if (meMeta) {
+      meMeta.textContent =
+        "消除 " + me.score + " · 剩余 " + me.remaining + " · " + formatBattleTime(me.elapsedMs);
+    }
+    if (meBar) meBar.style.width = Math.round(me.progress * 100) + "%";
+
+    const oppMeta = document.getElementById("duelOppMeta");
+    const oppBar = document.getElementById("duelOppBar");
+    if (!liveConnected || !liveOpp.connected) {
+      if (oppMeta) oppMeta.textContent = liveRole === "host" ? "等待对手加入…" : "连接中…";
+      if (oppBar) oppBar.style.width = "0%";
+    } else {
+      const op = liveOpp;
+      if (oppMeta) {
+        let t = "消除 " + (op.score || 0) + " · 剩余 " + (op.remaining != null ? op.remaining : "—") + " · " + formatBattleTime(op.elapsedMs || 0);
+        if (op.finished) t += op.won ? " · 已通关" : " · 已结束";
+        oppMeta.textContent = t;
+      }
+      if (oppBar) oppBar.style.width = Math.round((op.progress || 0) * 100) + "%";
+    }
+  }
+
+  function stopLiveSyncLoop() {
+    if (liveSyncTimer) {
+      clearInterval(liveSyncTimer);
+      liveSyncTimer = null;
+    }
+  }
+
+  function startLiveSyncLoop() {
+    stopLiveSyncLoop();
+    liveSyncTimer = setInterval(() => {
+      if (!battleMode || !liveWanted) return;
+      broadcastLiveSync();
+      updateDuelPanel();
+    }, 400);
+  }
+
+  function broadcastLiveSync() {
+    if (!liveConn || !liveConnected) return;
+    try {
+      liveConn.send(getMyLiveState());
+    } catch (e) { /* ignore */ }
+  }
+
+  function onLiveMessage(data) {
+    if (!data || typeof data !== "object") return;
+    if (data.type === "hello") {
+      liveOpp.connected = true;
+      liveConnected = true;
+      setDuelStatus("已连接");
+      toast("对手已加入，开始对战");
+      broadcastLiveSync();
+      updateDuelPanel();
+      return;
+    }
+    if (data.type === "sync") {
+      liveOpp = {
+        score: data.score || 0,
+        remaining: data.remaining || 0,
+        elapsedMs: data.elapsedMs || 0,
+        finished: !!data.finished,
+        won: !!data.won,
+        progress: data.progress || 0,
+        connected: true,
+      };
+      liveConnected = true;
+      setDuelStatus("同步中");
+      if (data.finished && data.won && battleOpponentTime == null && data.elapsedMs) {
+        battleOpponentTime = data.elapsedMs;
+      }
+      updateDuelPanel();
+      return;
+    }
+  }
+
+  function wireLiveConnection(conn) {
+    liveConn = conn;
+    conn.on("open", () => {
+      liveConnected = true;
+      liveOpp.connected = true;
+      setDuelStatus("已连接");
+      try {
+        conn.send({ type: "hello", role: liveRole });
+      } catch (e) {}
+      broadcastLiveSync();
+      updateDuelPanel();
+      startLiveSyncLoop();
+    });
+    conn.on("data", onLiveMessage);
+    conn.on("close", () => {
+      liveConnected = false;
+      liveOpp.connected = false;
+      setDuelStatus("对手已断开");
+      updateDuelPanel();
+    });
+    conn.on("error", () => {
+      setDuelStatus("连接异常");
+    });
+  }
+
+  function teardownLive() {
+    stopLiveSyncLoop();
+    try {
+      if (liveConn) liveConn.close();
+    } catch (e) {}
+    try {
+      if (livePeer) livePeer.destroy();
+    } catch (e) {}
+    livePeer = null;
+    liveConn = null;
+    liveRole = null;
+    liveHostPeerId = null;
+    liveConnected = false;
+    liveWanted = false;
+    liveOpp = { score: 0, remaining: 0, elapsedMs: 0, finished: false, won: false, connected: false };
+    setDuelStatus("未连接");
+    updateDuelPanel();
+  }
+
+  function ensurePeerJs() {
+    return typeof Peer !== "undefined";
+  }
+
+  function createHostRoom(payload) {
+    return new Promise((resolve, reject) => {
+      if (!ensurePeerJs()) {
+        reject(new Error("no peerjs"));
+        return;
+      }
+      teardownLive();
+      liveWanted = true;
+      liveRole = "host";
+      const peer = new Peer();
+      livePeer = peer;
+      const timer = setTimeout(() => reject(new Error("timeout")), 12000);
+      peer.on("open", (id) => {
+        clearTimeout(timer);
+        liveHostPeerId = id;
+        setDuelStatus("等待对手…");
+        resolve(id);
+      });
+      peer.on("connection", (conn) => {
+        wireLiveConnection(conn);
+      });
+      peer.on("error", (err) => {
+        clearTimeout(timer);
+        setDuelStatus("房间失败");
+        reject(err);
+      });
+    });
+  }
+
+  function joinHostRoom(hostId) {
+    return new Promise((resolve, reject) => {
+      if (!ensurePeerJs()) {
+        reject(new Error("no peerjs"));
+        return;
+      }
+      teardownLive();
+      liveWanted = true;
+      liveRole = "guest";
+      liveHostPeerId = hostId;
+      const peer = new Peer();
+      livePeer = peer;
+      const timer = setTimeout(() => reject(new Error("timeout")), 12000);
+      peer.on("open", () => {
+        const conn = peer.connect(hostId, { reliable: true });
+        wireLiveConnection(conn);
+        clearTimeout(timer);
+        resolve(true);
+      });
+      peer.on("error", (err) => {
+        clearTimeout(timer);
+        setDuelStatus("加入失败");
+        reject(err);
+      });
+    });
+  }
+
   function setBattleUi() {
     const badge = document.getElementById("battleBadge");
     const timerStat = document.getElementById("battleTimerStat");
@@ -969,7 +1282,9 @@
     }
     document.getElementById("app").classList.toggle("in-battle", !!battleMode);
     updateBattleTimerDisplay();
+    updateDuelPanel();
   }
+
 
   function enterBattle(seed, lv, diff, opponentTime) {
     battleMode = true;
@@ -980,6 +1295,10 @@
     difficulty = DIFFICULTIES[diff] ? diff : "normal";
     setBattleUi();
     startLevel(lv, false);
+    battleTotalTiles = countBoardTiles();
+    if (liveWanted) startLiveSyncLoop();
+    broadcastLiveSync();
+    updateDuelPanel();
   }
 
   function exitBattle(opts) {
@@ -990,6 +1309,7 @@
     battleStartMs = 0;
     pendingInvitePayload = null;
     stopBattleTimer();
+    teardownLive();
     setBattleUi();
     stripBattleQuery();
     hideBattleInvite();
@@ -1197,6 +1517,8 @@
         render();
         checkEnd();
         if (!gameOver) saveProgress();
+        broadcastLiveSync();
+        updateDuelPanel();
       });
     }, 280);
   }
@@ -1313,6 +1635,11 @@
     if (battleMode) {
       stopBattleTimer();
       const timeMs = battleStartMs ? Date.now() - battleStartMs : 0;
+      if (liveConnected && liveOpp.finished && liveOpp.won && liveOpp.elapsedMs && battleOpponentTime == null) {
+        battleOpponentTime = liveOpp.elapsedMs;
+      }
+      broadcastLiveSync();
+      updateDuelPanel();
       updateBattleTimerDisplay();
       let compareLabel = "";
       let title = "对战通关！";
@@ -1394,6 +1721,8 @@
     slots = [];
     if (battleMode) {
       stopBattleTimer();
+      broadcastLiveSync();
+      updateDuelPanel();
       showOverlay(
         "😿",
         "对战失败…",
@@ -1671,6 +2000,7 @@
 
   window.addEventListener("resize", scheduleFit);
   window.addEventListener("orientationchange", () => setTimeout(scheduleFit, 120));
+  window.addEventListener("pagehide", () => teardownLive());
 
   function hideBattleInvite() {
     const el = document.getElementById("battleOverlay");
@@ -1679,19 +2009,22 @@
 
   function showBattleInvite(payload) {
     pendingInvitePayload = payload;
-    const link = buildBattleLink(payload);
+    const link = buildBattleLink(payload, liveHostPeerId);
     const box = document.getElementById("battleInviteLink");
     const hint = document.getElementById("battleInviteHint");
     if (box) box.textContent = link;
     if (hint) {
       const dLabel = (DIFFICULTIES[payload.d] || DIFFICULTIES.normal).label;
+      const liveNote = liveHostPeerId
+        ? "实时房间已开，好友打开后可互看进度。"
+        : "若实时房间失败，仍可同盘竞速。";
       hint.textContent =
-        "第 " + payload.lv + " 关 · " + dLabel + " · 种子已锁定。复制链接发给好友，双方同一副牌比速度～";
+        "第 " + payload.lv + " 关 · " + dLabel + " · " + liveNote;
     }
     document.getElementById("battleOverlay").classList.add("show");
   }
 
-  function openBattleComposer() {
+  async function openBattleComposer() {
     if (busy) return;
     if (battleMode) {
       toast("已在对战中");
@@ -1703,23 +2036,37 @@
       d: difficulty,
       lv: level,
     };
-    showBattleInvite(payload);
+    const box = document.getElementById("battleInviteLink");
+    if (box) box.textContent = "正在创建实时房间…";
+    document.getElementById("battleOverlay").classList.add("show");
+    try {
+      const id = await createHostRoom(payload);
+      payload.p = id;
+      showBattleInvite(payload);
+      toast("房间已创建，复制链接发给好友");
+    } catch (e) {
+      liveWanted = false;
+      showBattleInvite(payload);
+      toast("实时房间创建失败，仍可分享同盘竞速");
+    }
   }
 
   document.getElementById("btnBattle").addEventListener("click", openBattleComposer);
   document.getElementById("btnCloseBattle").addEventListener("click", () => {
     pendingInvitePayload = null;
+    if (!battleMode) teardownLive();
     hideBattleInvite();
   });
   document.getElementById("battleOverlay").addEventListener("click", (e) => {
     if (e.target === document.getElementById("battleOverlay")) {
       pendingInvitePayload = null;
+      if (!battleMode) teardownLive();
       hideBattleInvite();
     }
   });
   document.getElementById("btnCopyInvite").addEventListener("click", async () => {
     if (!pendingInvitePayload) return;
-    const link = buildBattleLink(pendingInvitePayload);
+    const link = buildBattleLink(pendingInvitePayload, liveHostPeerId);
     const ok = await copyText(link);
     toast(ok ? "邀请链接已复制" : "复制失败，请手动复制");
   });
@@ -1727,15 +2074,19 @@
     if (!pendingInvitePayload) return;
     const p = pendingInvitePayload;
     hideBattleInvite();
+    liveWanted = liveWanted || !!liveHostPeerId;
     enterBattle(p.seed, p.lv, p.d, null);
-    toast("对战开始 · 点击方块计时");
+    toast(liveHostPeerId ? "等待对手加入 · 点击方块计时" : "对战开始 · 点击方块计时");
+    updateDuelPanel();
   });
 
   // Kick off — battle invite from URL takes priority; never write battle into SP save
   let bootBattle = null;
+  let bootPeerId = null;
   try {
     const sp = new URLSearchParams(location.search);
     const raw = sp.get("b");
+    bootPeerId = sp.get("p");
     if (raw) bootBattle = decodeBattlePayload(raw);
   } catch (e) {
     bootBattle = null;
@@ -1751,11 +2102,21 @@
   }
 
   if (bootBattle) {
-    if (saved && saved.difficulty && DIFFICULTIES[saved.difficulty] && !bootBattle.d) {
-      /* keep */
-    }
     enterBattle(bootBattle.seed, bootBattle.lv, bootBattle.d, bootBattle.t);
-    if (bootBattle.t != null) {
+    if (bootPeerId) {
+      liveWanted = true;
+      updateDuelPanel();
+      joinHostRoom(bootPeerId)
+        .then(() => {
+          toast("已连接房主，实时同步进度");
+          updateDuelPanel();
+        })
+        .catch(() => {
+          toast("实时连接失败，仍可同盘竞速");
+          setDuelStatus("离线竞速");
+          updateDuelPanel();
+        });
+    } else if (bootBattle.t != null) {
       toast("对战挑战 · 对手用时 " + formatBattleTime(bootBattle.t));
     } else {
       toast("对战模式 · 点击方块开始计时");
