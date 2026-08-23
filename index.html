@@ -44,6 +44,20 @@
     gap: 12px;
   }
 
+  .orient-tip {
+    display: none;
+    text-align: center;
+    font-size: 0.72rem;
+    color: #c07088;
+    background: rgba(255,255,255,0.7);
+    border-radius: 999px;
+    padding: 6px 12px;
+    margin: -4px auto 0;
+    width: fit-content;
+    max-width: 100%;
+  }
+  .orient-tip.show { display: block; }
+
   /* Header */
   .header {
     text-align: center;
@@ -103,25 +117,27 @@
     justify-content: center;
     align-items: flex-end;
     gap: var(--gap);
-    min-height: 280px;
+    min-height: 200px;
     position: relative;
     z-index: 1;
+    width: 100%;
   }
   .col {
     display: flex;
     flex-direction: column-reverse;
-    gap: 4px;
+    gap: max(2px, calc(var(--tile) * 0.08));
     width: var(--tile);
+    flex: 0 0 var(--tile);
     min-height: 40px;
   }
   .tile {
     width: var(--tile);
     height: var(--tile);
-    border-radius: 12px;
+    border-radius: max(8px, calc(var(--tile) * 0.22));
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 1.55rem;
+    font-size: var(--tile-font, 1.55rem);
     cursor: pointer;
     user-select: none;
     position: relative;
@@ -210,7 +226,7 @@
   .slot {
     width: var(--tile);
     height: var(--tile);
-    border-radius: 12px;
+    border-radius: max(8px, calc(var(--tile) * 0.22));
     background: rgba(255,255,255,0.65);
     border: 2px dashed rgba(255, 160, 180, 0.55);
     display: flex;
@@ -225,7 +241,7 @@
     box-shadow: 0 2px 6px rgba(0,0,0,0.06);
   }
   .slot .slot-emoji {
-    font-size: 1.55rem;
+    font-size: var(--tile-font, 1.55rem);
     line-height: 1;
     transition: transform 0.2s;
   }
@@ -338,13 +354,41 @@
 
   .busy .tile.top { pointer-events: none; }
 
-  /* Responsive tile sizing for more columns */
-  @media (max-width: 380px) {
-    :root { --tile: 42px; --gap: 4px; }
-    .tile, .slot .slot-emoji { font-size: 1.35rem; }
+  /* Landscape: use full width, denser chrome */
+  @media (orientation: landscape) {
+    body {
+      padding: 6px 10px 12px;
+      align-items: center;
+      min-height: 100dvh;
+    }
+    .app {
+      max-width: min(920px, 100%);
+      gap: 8px;
+    }
+    .title { font-size: 1.25rem; }
+    .subtitle { display: none; }
+    .stats { margin-top: 4px; gap: 10px; }
+    .stat { padding: 4px 12px; font-size: 0.82rem; }
+    .board-wrap { padding: 10px 8px 12px; }
+    .board { min-height: 140px; }
+    .slots-section { padding: 8px 10px 10px; }
+    .slots-label { margin-bottom: 6px; }
+    .orient-tip { display: none !important; }
   }
-  @media (min-width: 421px) {
-    :root { --tile: 50px; }
+
+  @media (orientation: landscape) and (max-height: 430px) {
+    .app {
+      display: grid;
+      grid-template-columns: 1fr minmax(200px, 280px);
+      grid-template-rows: auto 1fr auto;
+      gap: 8px 12px;
+      align-items: stretch;
+    }
+    .header { grid-column: 1 / -1; }
+    .board-wrap { grid-column: 1; grid-row: 2 / 4; }
+    .slots-section { grid-column: 2; grid-row: 2; align-self: end; }
+    .controls { grid-column: 2; grid-row: 3; }
+    .board { min-height: 120px; max-height: calc(100dvh - 90px); overflow-y: auto; }
   }
 
   .toast {
@@ -378,6 +422,7 @@
       <div class="stat">第 <span id="levelNum">1</span> 关</div>
       <div class="stat">消除 <span id="scoreNum">0</span></div>
     </div>
+    <p class="orient-tip" id="orientTip">列较多时横过来玩更舒服～</p>
   </header>
 
   <div class="board-wrap">
@@ -831,14 +876,58 @@
     toastTimer = setTimeout(() => toastEl.classList.remove("show"), 1800);
   }
 
+  function fitBoard() {
+    const n = Math.max(columns.length || 7, 1);
+    const wrap = document.querySelector(".board-wrap");
+    if (!wrap) return;
+    const style = getComputedStyle(wrap);
+    const padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    const avail = Math.max(120, wrap.clientWidth - padX);
+    const gap = n >= 10 ? 2 : n >= 8 ? 3 : 5;
+    let tile = Math.floor((avail - gap * (n - 1)) / n);
+    const isLandscape = window.matchMedia("(orientation: landscape)").matches;
+    const maxTile = isLandscape ? 56 : 50;
+    const minTile = isLandscape ? 30 : 28;
+    tile = Math.max(minTile, Math.min(maxTile, tile));
+    const root = document.documentElement;
+    root.style.setProperty("--tile", tile + "px");
+    root.style.setProperty("--gap", gap + "px");
+    root.style.setProperty("--tile-font", Math.max(14, Math.round(tile * 0.58)) + "px");
+
+    const tip = document.getElementById("orientTip");
+    if (tip) {
+      const narrow = window.innerWidth < 430;
+      const portrait = !isLandscape;
+      tip.classList.toggle("show", portrait && narrow && n >= 8);
+    }
+  }
+
+  function scheduleFit() {
+    requestAnimationFrame(() => {
+      fitBoard();
+      // second pass after fonts/layout settle
+      requestAnimationFrame(fitBoard);
+    });
+  }
+
+  const _renderBoard = renderBoard;
+  renderBoard = function () {
+    _renderBoard();
+    scheduleFit();
+  };
+
   document.getElementById("btnRestart").addEventListener("click", () => {
     if (busy) return;
     startLevel(level, false);
   });
   document.getElementById("btnHint").addEventListener("click", showHint);
 
+  window.addEventListener("resize", scheduleFit);
+  window.addEventListener("orientationchange", () => setTimeout(scheduleFit, 120));
+
   // Kick off
   startLevel(1, false);
+  scheduleFit();
 })();
 </script>
 </body>
